@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ from urllib3.exceptions import HTTPError
 
 from utils.chat_rag import HistoryRagService, format_discord_answer, split_discord_message
 from utils.commands import Commands
+from utils.contest import ContestService
 from utils.rules import RulesService, temporary_pdf_path, write_rules_pdf
 from utils.transaction import Transaction
 
@@ -207,6 +209,52 @@ def register_rules_command(bot, rules_service):
             logger.error("Error with rules command: %s", error)
 
 
+def register_contest_commands(bot, contest_service):
+    async def deny_non_admin(ctx):
+        await ctx.send("Only the league treasurer can change the payout ledger.")
+        logger.info("Rejected contest write from %s", ctx.author.id)
+
+    @bot.group(
+        name="weeklycontests",
+        aliases=["weeklycontest"],
+        invoke_without_command=True,
+        brief="Current weekly results and season totals.",
+    )
+    async def weeklycontests(ctx):
+        try:
+            await ctx.send(await asyncio.to_thread(contest_service.report))
+        except Exception:
+            logger.exception("Failed to retrieve weekly contest results")
+            await ctx.send("I could not retrieve the weekly contest results. ESPN may be unavailable right now.")
+
+    @weeklycontests.command(name="totals", brief="Season payout totals.")
+    async def totals(ctx):
+        await ctx.send(await asyncio.to_thread(contest_service.season))
+
+    @weeklycontests.command(name="penalty", brief="Log taunting/unsportsmanlike penalties for week 13.")
+    async def penalty(ctx, week: int, team: str, count: int, *, player: str):
+        if not contest_service.is_admin(ctx.author.id):
+            await deny_non_admin(ctx)
+            return
+        await ctx.send(await asyncio.to_thread(contest_service.log_penalty, week, team, player, count))
+
+    @weeklycontests.command(name="export", brief="Download the payout ledger as CSV.")
+    async def export(ctx):
+        payload = await asyncio.to_thread(contest_service.export_csv)
+        attachment = discord.File(io.BytesIO(payload.encode()), filename=f"payouts-{contest_service.league_year}.csv")
+        await ctx.send("Full payout ledger attached.", file=attachment)
+
+    @weeklycontests.error
+    @penalty.error
+    async def contest_error(ctx, error):
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send("Usage: `/weeklycontests penalty <week> <team> <count> <player>`")
+        elif isinstance(error, commands.BadArgument):
+            await ctx.send("That does not look like a week number.")
+        else:
+            logger.error("Error with weeklycontests command: %s", error)
+
+
 def configure_history_refresh(bot, rag_service):
     interval_seconds = float(os.getenv("RAG_SYNC_INTERVAL_SECONDS", "3600"))
 
@@ -241,10 +289,12 @@ def configure_history_refresh(bot, rag_service):
 def create_application():
     load_dotenv(Path(__file__).with_name(".env"), override=False)
     bot = initialize_bot()
-    commander = Commands(initialize_league())
+    league = initialize_league()
+    commander = Commands(league)
     register_league_commands(bot, commander)
 
     database_path = Path(os.getenv("CHAT_HISTORY_DB", "data/chat_history.db"))
+    register_contest_commands(bot, ContestService.from_environment(league, database_path))
     try:
         rag_service = HistoryRagService.from_environment(database_path)
     except RuntimeError as error:

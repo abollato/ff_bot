@@ -222,6 +222,9 @@ uv sync --frozen
 - `RULES_GITHUB_REF`: Branch containing the current rules (defaults to `main`).
 - `RULES_GITHUB_TOKEN`: Fine-grained GitHub token with read-only access to repository contents. Required for a private
   rules repository and configured as a Fly secret.
+- `CONTEST_ADMIN_IDS`: Comma-separated Discord user IDs allowed to log penalties with `/weeklycontests`. When unset,
+  any user may log penalties.
+- `CONTEST_TIMEZONE`: Timezone used to choose the displayed contest week (defaults to `America/Chicago`).
 
 ### Running with Docker
 
@@ -303,6 +306,32 @@ fly secrets set RULES_GITHUB_TOKEN='github_pat_...'
 ```
 
 If GitHub cannot be reached or authenticated, `/rules` fails rather than presenting a cached rules revision as current.
+
+### Tracking weekly payouts
+
+Every week pays two $20 pots: one to the highest-scoring lineup, and one to that week's side contest. The fourteen
+contests live in `utils/contest_schedule.py`.
+
+```
+/weeklycontests              # relevant week's results and the season totals
+/weeklycontests totals       # season totals alone
+/weeklycontests export       # the whole final-results ledger as a CSV attachment
+```
+
+The command refreshes ESPN automatically. Thursday through Monday it shows the current week's live leaders as pending.
+Tuesday and Wednesday it shows the prior week's final results and the upcoming challenge. Completed weeks are
+automatically written to SQLite, so later reads do not move money after a payout was finalized. When several teams tie,
+the pot splits evenly and the odd cents are distributed, so the recorded payouts always add back to exactly $20.
+
+Two contests need input the ESPN API does not carry. Week 13 counts taunting and unsportsmanlike penalties, logged as
+they happen:
+
+```
+/weeklycontests penalty 13 "Team Name" 1 Player Name
+```
+
+Week 8 pays the best keeper and reads ESPN's keeper flags directly. A team that designated no keeper is not eligible
+that week.
 
 ### Running checks
 
